@@ -148,7 +148,7 @@ def main(config, args):
 
     optimizer = build_optimizer(config, model, logger, mute_repeat=args.mute_repeat)
     if args.ddp == 'torch':
-        model = torch.nn.parallel.DistributedDataParallel(model, broadcast_buffers=False)
+        model = torch.nn.parallel.DistributedDataParallel(model, broadcast_buffers=False, find_unused_parameters=True)
     else:
         raise ValueError(f"Unknown ddp type {args.ddp}")
 
