@@ -379,9 +379,13 @@ class Mamba2(nn.Module):
         if self.use_mc_ncd:
             # W_g: d_model -> r, shared across heads
             self.W_g = nn.Linear(self.d_model, self.mc_rank, bias=False, **factory_kwargs)
-            # W_A: r -> H * S, per-head independent, ZERO init for safe start
+            # W_A: r -> H * S, per-head independent, near-zero init for safe start.
+            # We use a tiny random init instead of strict zero so that W_g receives
+            # non-zero gradients from step 1 (otherwise DDP with default settings
+            # complains about unused parameters).  The output deviation from VSSD
+            # baseline at step 0 is ~1e-6, well within float32 noise.
             self.W_A = nn.Linear(self.mc_rank, self.nheads * self.d_state, bias=False, **factory_kwargs)
-            nn.init.zeros_(self.W_A.weight)
+            nn.init.normal_(self.W_A.weight, mean=0.0, std=1e-4)
             # a_bias: (H * S,), inverse-softplus of VSSD's initial A so that
             # at step 0:  -softplus(0 + a_bias) == -A_init  ==  VSSD's effective A.
             with torch.no_grad():
