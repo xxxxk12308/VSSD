@@ -131,9 +131,8 @@ def build_dataset(is_train, config):
 
 # =============================================================================
 
-        # Auto-infer number of classes from dataset folders.
-        # Works for ImageNet-1k (1000), ImageNet-100 (100), or any custom subset.
-        nb_classes = len(dataset.classes) if hasattr(dataset, 'classes') else 1000
+        # Hardcoded for ImageNet-100. Change to 1000 when running ImageNet-1k.
+        nb_classes = 100
     elif config.DATA.DATASET == 'imagenet22K':
         prefix = 'ILSVRC2011fall_whole'
         if is_train:
