@@ -12,6 +12,7 @@ def build_vssd_model(config, is_pretrain=False):
             image_size=config.DATA.IMG_SIZE,
             patch_size=config.MODEL.VMAMBA2.PATCH_SIZE,
             in_chans=config.MODEL.VMAMBA2.IN_CHANS,
+            num_classes=config.MODEL.NUM_CLASSES,
             embed_dim=config.MODEL.VMAMBA2.EMBED_DIM,
             depths=config.MODEL.VMAMBA2.DEPTHS,
             num_heads=config.MODEL.VMAMBA2.NUM_HEADS,
