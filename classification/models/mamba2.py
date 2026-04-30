@@ -371,6 +371,28 @@ class Mamba2(nn.Module):
         # self.register_buffer("A_log", torch.zeros(self.nheads, dtype=torch.float32, device=device), persistent=True)
         self.A_log._no_weight_decay = True
 
+        # ===== MC-NCD: token-dependent rank-r diagonal A =====
+        # A_t = -softplus(W_A * SiLU(W_g * x_t) + a_bias) * Delta_t,  shape (B, L, H, S)
+        # Reduces to VSSD baseline at step 0 due to zero-init of W_A.
+        self.use_mc_ncd = kwargs.get('use_mc_ncd', True)
+        self.mc_rank = kwargs.get('mc_rank', 8)
+        if self.use_mc_ncd:
+            # W_g: d_model -> r, shared across heads
+            self.W_g = nn.Linear(self.d_model, self.mc_rank, bias=False, **factory_kwargs)
+            # W_A: r -> H * S, per-head independent, ZERO init for safe start
+            self.W_A = nn.Linear(self.mc_rank, self.nheads * self.d_state, bias=False, **factory_kwargs)
+            nn.init.zeros_(self.W_A.weight)
+            # a_bias: (H * S,), inverse-softplus of VSSD's initial A so that
+            # at step 0:  -softplus(0 + a_bias) == -A_init  ==  VSSD's effective A.
+            with torch.no_grad():
+                a_init = A.unsqueeze(-1).expand(self.nheads, self.d_state).clone()  # (H, S)
+                a_init = a_init.clamp(min=1e-4)
+                # inverse_softplus(y) = y + log(1 - exp(-y))  (numerically stable form)
+                inv_a = a_init + torch.log(-torch.expm1(-a_init))
+            self.a_bias = nn.Parameter(inv_a.flatten().to(dtype=dtype))  # (H*S,)
+            self.a_bias._no_weight_decay = True
+        # =====================================================
+
         # D "skip" parameter
         if kwargs.get('dscale', False):
             self.D = Scale(dim=self.d_inner, init_value=1.0, trainable=True)
@@ -401,7 +423,7 @@ class Mamba2(nn.Module):
         self.kwargs = kwargs
 
 
-    def non_casual_linear_attn(self, x, dt, A, B, C, D, H=None, W=None, relpos=None, last_kv=None):
+    def non_casual_linear_attn(self, x, dt, A, B, C, D, H=None, W=None, relpos=None, last_kv=None, A_tilde=None):
         '''
         non-casual attention duality of mamba v2
         x: (B, L, H, D), equivalent to V in attention
@@ -410,13 +432,19 @@ class Mamba2(nn.Module):
         B: (B, L, d_state), equivalent to K in attention
         C: (B, L, d_state), equivalent to Q in attention
         D: (nheads), equivalent to the skip connection
+        A_tilde: (B, L, H, S) optional MC-NCD token-dependent diagonal A; if given, overrides scalar A.
         '''
         skip = x
         batch, seqlen, head, dim = x.shape
         dstate = B.shape[2]
         V = x.permute(0, 2, 1, 3) # (B, H, L, D)
         dt = dt.permute(0, 2, 1) # (B, H, L)
-        dA = dt.unsqueeze(-1) * A.view(1, -1, 1, 1)#.repeat(batch, 1, seqlen, 1) # (B, H, L, 1)
+        if A_tilde is not None:
+            # MC-NCD path: A_tilde is (B, L, H, S) -> permute to (B, H, L, S)
+            A_tilde_p = A_tilde.permute(0, 2, 1, 3)                       # (B, H, L, S)
+            dA = dt.unsqueeze(-1) * A_tilde_p                             # (B, H, L, S)
+        else:
+            dA = dt.unsqueeze(-1) * A.view(1, -1, 1, 1)                   # (B, H, L, 1)
         if self.ssd_aexp: dA = 1/dA.exp()
         if self.ssd_positve_dA: dA = -dA
         if self.ssd_norm_da: dA = dA / torch.sum(dA, dim=-2, keepdim=True)
@@ -465,12 +493,21 @@ class Mamba2(nn.Module):
                 KV = Kscaled.transpose(-2, -1) @ V
                 x = Q @ KV
             else:
-                V_scaled = V * dA
+                if A_tilde is not None:
+                    # MC-NCD: dA has shape (B, H, L, S), apply to K along dstate dim.
+                    # K shape: (B, 1, L, S) -> broadcast to (B, H, L, S)
+                    K_scaled = K * dA                                # (B, H, L, S)
+                    if Q.dtype != K_scaled.dtype:
+                        Q = Q.to(K_scaled.dtype)
+                    KV = K_scaled.transpose(-2, -1) @ V              # (B, H, S, D)
+                    x = Q @ KV                                        # (B, H, L, D)
+                else:
+                    V_scaled = V * dA
 
-                if Q.dtype != V_scaled.dtype or Q.dtype != V_scaled.dtype:
-                    Q, K = Q.to(V_scaled.dtype), K.to(V_scaled.dtype)
-                KV = K.transpose(-2, -1) @ V_scaled # (B, H, dstate, D)
-                x = Q @ KV # (B, H, L, D)
+                    if Q.dtype != V_scaled.dtype or Q.dtype != V_scaled.dtype:
+                        Q, K = Q.to(V_scaled.dtype), K.to(V_scaled.dtype)
+                    KV = K.transpose(-2, -1) @ V_scaled # (B, H, dstate, D)
+                    x = Q @ KV # (B, H, L, D)
         if self.kwargs.get('dscale', False):
             x = x.permute(0, 2, 1, 3).contiguous() + self.D(skip.flatten(2,3)).view(batch, seqlen, head, dim)
         else:
@@ -486,6 +523,15 @@ class Mamba2(nn.Module):
         """
         batch, seqlen, dim = u.shape
         A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state)
+        # ===== MC-NCD: compute token-dependent diagonal A_tilde =====
+        # Only used in non_casual_linear_attn path; chunk-scan path keeps scalar A.
+        A_tilde = None
+        if self.use_mc_ncd and self.linear_attn_duality:
+            g = F.silu(self.W_g(u))                                    # (B, L, r)
+            a_raw = self.W_A(g) + self.a_bias                          # (B, L, H*S)
+            # negative for SSD stability;  shape (B, L, H, S)
+            A_tilde = -F.softplus(a_raw).view(batch, seqlen, self.nheads, self.d_state)
+        # ============================================================
         initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
 
@@ -514,7 +560,8 @@ class Mamba2(nn.Module):
         if self.linear_attn_duality:
             y, KV = self.non_casual_linear_attn(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
-                dt, A, B, C, self.D, H, W, relpos, last_kv
+                dt, A, B, C, self.D, H, W, relpos, last_kv,
+                A_tilde=A_tilde
             )
         else:
             if self.kwargs.get('bidirection', False):
