@@ -1,0 +1,51 @@
+MODEL:
+  TYPE: vmamba2
+  NAME: visionmamba3nc_tiny
+  DROP_PATH_RATE: 0.2
+  VMAMBA2:
+    EMBED_DIM: 96
+    DEPTHS: [2, 2, 8, 2]
+    NUM_HEADS: [4, 4, 8, 16]
+
+    SIMPLE_DOWNSAMPLE: False
+    SIMPLE_PATCH_EMBED: False
+    RMT_DOWNSAMPLE: True
+    RMT_PATCH_EMBED: True
+    USE_CPE: True
+
+    MLP_RATIO: 3.0
+    SSD_EXPANSION: 1
+    SSD_NGROUPS: 1
+    SSD_CHUNK_SIZE: 256
+    D_STATE: 64
+
+    ATTN_TYPES: ['mamba3', 'mamba3', 'mamba3', 'standard']
+
+    DROP_PATH_RATE: 0.2
+    ATTN_DROP: 0.0
+
+    MULTI_BRANCH: True
+    ZACT: False
+    DSCALE: [False, False, False, False]
+    RES_SCALE: [False, False, False, False]
+
+    # VisionMamba3NC specific
+    ROPE_FRACTION: [1.0, 1.0, 0.8, 0.5]
+    M3NC_LOCAL_KERNEL: 3
+    M3NC_USE_PRE_DWCONV: True
+
+    # keep these conservative for first run
+    LINEAR_ATTN_DUALITY: False
+    ROPE: False
+    SSD_LINEAR_NORM: False
+    SSD_POSITIVE_DA: False
+    EXP_DA: False
+    AB_BIAS: False
+    WIN_ONLY: [False, False, False, False]
+    ASYNC_STATE: [12, 24, 48, 64]
+
+  DDP: 'torch'
+
+TRAIN:
+  EPOCHS: 300
+  WARMUP_EPOCHS: 20

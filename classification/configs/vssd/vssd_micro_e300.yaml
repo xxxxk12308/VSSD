@@ -12,8 +12,13 @@ MODEL:
     SSD_CHUNK_SIZE: 256
     LINEAR_ATTN_DUALITY: True
     SSD_POSITIVE_DA: True
-    ATTN_TYPES: ['mamba2', 'mamba2', 'mamba2', 'standard']
+    ATTN_TYPES: ['mamba3', 'mamba3', 'mamba3', 'standard']
     D_STATE: 48
+
+        # VisionMamba3NC specific
+    ROPE_FRACTION: [1.0, 1.0, 0.8, 0.5]
+    M3NC_LOCAL_KERNEL: 3
+    M3NC_USE_PRE_DWCONV: True
 
   DDP: 'torch'
 

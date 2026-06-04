@@ -208,6 +208,13 @@ _C.AUG.MIXUP_SWITCH_PROB = 0.5
 # How to apply mixup/cutmix params. Per "batch", "pair", or "elem"
 _C.AUG.MIXUP_MODE = 'batch'
 
+
+# VisionMamba3NC parameters
+_C.MODEL.VMAMBA2.ROPE_FRACTION = [1.0, 1.0, 0.8, 0.5]
+_C.MODEL.VMAMBA2.M3NC_LOCAL_KERNEL = 3
+_C.MODEL.VMAMBA2.M3NC_USE_PRE_DWCONV = True
+
+
 # -----------------------------------------------------------------------------
 # Testing settings
 # -----------------------------------------------------------------------------
